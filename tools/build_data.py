@@ -11,6 +11,7 @@ Uso:
   pip install yfinance pandas lxml requests
   python tools/build_data.py --out site/data.json              # precios + universo
   python tools/build_data.py --out site/data.json --profiles   # además refresca perfiles (lento, ~10 min)
+  python tools/build_data.py --index sp1500 --out site/data.json    # S&P 1500 (~1.500 acciones)
   python tools/build_data.py --universe mi_lista.csv --out site/data.json   # CSV: symbol,name,sector,industry
   python tools/build_data.py --limit 40 --out /tmp/data.json   # prueba rápida
 """
@@ -18,7 +19,10 @@ import argparse, datetime as dt, io, json, os, sys, time
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
-WIKI = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+WIKI = {'sp500': 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+        'sp400': 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies',
+        'sp600': 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'}
+INDEX_SETS = {'sp500': ['sp500'], 'sp1500': ['sp500', 'sp400', 'sp600']}
 SECTOR_ES = {
     'Information Technology': 'Tecnología', 'Financials': 'Financiero', 'Energy': 'Energía', 'Health Care': 'Salud',
     'Industrials': 'Industriales', 'Consumer Discretionary': 'Consumo discrecional', 'Consumer Staples': 'Consumo básico',
@@ -37,21 +41,41 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
-def load_universe(path=None, limit=None):
+def _wiki_table(url):
+    """Devuelve (symbol, name, sector, industry) desde una tabla de Wikipedia, tolerando nombres de columna distintos."""
+    import requests
+    r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (atalaya personal screener)'}, timeout=30)
+    r.raise_for_status()
+    for t in pd.read_html(io.StringIO(r.text)):
+        cols = {str(c).strip().lower(): c for c in t.columns}
+        sym = next((cols[k] for k in cols if k in ('symbol', 'ticker', 'ticker symbol')), None)
+        nam = next((cols[k] for k in cols if k in ('security', 'company', 'name')), None)
+        sec = next((cols[k] for k in cols if 'gics' in k and 'sector' in k), None)
+        sub = next((cols[k] for k in cols if 'gics' in k and 'sub' in k), None)
+        if sym is not None and sec is not None and len(t) > 100:
+            return pd.DataFrame({'symbol': t[sym].astype(str), 'name': t[nam] if nam is not None else t[sym],
+                                 'sector': t[sec], 'industry': t[sub] if sub is not None else ''})
+    raise RuntimeError('No se encontró la tabla de constituyentes en ' + url)
+
+
+def load_universe(path=None, limit=None, index='sp500'):
     if path:
         df = pd.read_csv(path)
         for c in ('symbol', 'name', 'sector', 'industry'):
             if c not in df.columns:
                 df[c] = df['symbol'] if c == 'name' else ''
-        df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
-        df['sector'] = df['sector'].map(lambda x: SECTOR_ES.get(x, x))
     else:
-        import requests
-        r = requests.get(WIKI, headers={'User-Agent': 'Mozilla/5.0 (atalaya personal screener)'}, timeout=30)
-        r.raise_for_status()
-        t = pd.read_html(io.StringIO(r.text))[0]
-        df = pd.DataFrame({'symbol': t['Symbol'].str.replace('.', '-', regex=False), 'name': t['Security'],
-                           'sector': t['GICS Sector'].map(lambda x: SECTOR_ES.get(x, x)), 'industry': t['GICS Sub-Industry']})
+        parts = []
+        for key in INDEX_SETS[index]:
+            try:
+                parts.append(_wiki_table(WIKI[key]))
+            except Exception as e:
+                if key == 'sp500':
+                    raise
+                log(f'  aviso: no se pudo leer {key}: {e}')
+        df = pd.concat(parts, ignore_index=True)
+    df['symbol'] = df['symbol'].astype(str).str.strip().str.upper().str.replace('.', '-', regex=False)
+    df['sector'] = df['sector'].map(lambda x: SECTOR_ES.get(x, x))
     df = df.drop_duplicates('symbol')
     if limit:
         df = df.head(limit)
@@ -126,6 +150,17 @@ def refresh_profiles(symbols, path, max_age_days=7, workers=6):
     return cache
 
 
+def encode_v2(sym, name, typ, sec, ind, rb, o, h, l, c, v):
+    """Formato compacto v2: precios en centavos enteros. c = deltas del cierre (el primero absoluto);
+    o/h/l = diferencia contra el cierre del mismo día; v = miles de acciones."""
+    ci = [int(round(float(x) * 100)) for x in c]
+    oi = [int(round(float(x) * 100)) for x in o]; hi = [int(round(float(x) * 100)) for x in h]; li = [int(round(float(x) * 100)) for x in l]
+    return {'s': sym, 'n': str(name), 't': typ, 'sec': sec, 'ind': ind, 'rb': int(rb),
+            'c': [ci[0]] + [ci[i] - ci[i - 1] for i in range(1, len(ci))],
+            'o': [oi[i] - ci[i] for i in range(len(ci))], 'h': [hi[i] - ci[i] for i in range(len(ci))], 'l': [li[i] - ci[i] for i in range(len(ci))],
+            'v': [int(round(float(x) / 1000)) for x in v]}
+
+
 def build_payload(frames, uni, days, min_bars, profiles):
     if 'SPY' not in frames:
         raise SystemExit('No se pudo descargar SPY (benchmark). Abortando.')
@@ -157,9 +192,7 @@ def build_payload(frames, uni, days, min_bars, profiles):
         l = pd.concat([px['Low'], o, c], axis=1).min(axis=1)
         if (c <= 0).any() or (h <= 0).any() or (l <= 0).any():
             dropped.append((sym, 'precios inválidos')); continue
-        a = {'s': sym, 'n': str(name), 't': typ, 'sec': sec, 'ind': ind, 'rb': int(rb),
-             'o': [round(float(x), 2) for x in o], 'h': [round(float(x), 2) for x in h], 'l': [round(float(x), 2) for x in l],
-             'c': [round(float(x), 2) for x in c], 'v': [int(x) for x in v]}
+        a = encode_v2(sym, name, typ, sec, ind, rb, o, h, l, c, v)
         p = profiles.get(sym) if typ == 'stock' else None
         if p:
             a['mc'] = p.get('mc'); a['ed'] = p.get('ed')
@@ -168,7 +201,7 @@ def build_payload(frames, uni, days, min_bars, profiles):
         assets.append(a)
     if not any(a['s'] == 'SPY' for a in assets):
         raise SystemExit('SPY quedó fuera de los datos.')
-    payload = {'meta': {'source': 'Yahoo Finance (yfinance)', 'label': 'Datos reales de fin de día',
+    payload = {'meta': {'format': 2, 'source': 'Yahoo Finance (yfinance)', 'label': 'Datos reales de fin de día',
                         'generated': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), 'dropped': len(dropped)},
                'dates': [d.strftime('%Y-%m-%d') for d in base], 'assets': assets}
     return payload, dropped
@@ -179,13 +212,14 @@ def main():
     ap.add_argument('--out', default='site/data.json')
     ap.add_argument('--days', type=int, default=1100, help='ruedas a conservar (1100 cubre EMA 200 semanal)')
     ap.add_argument('--min-bars', type=int, default=400, help='historia mínima para incluir un activo')
+    ap.add_argument('--index', choices=list(INDEX_SETS), default='sp500', help='sp500 (~500 acciones) o sp1500 (S&P 500 + 400 + 600, ~1.500)')
     ap.add_argument('--universe', help='CSV propio: symbol,name,sector,industry')
     ap.add_argument('--limit', type=int, help='solo los primeros N del universo (pruebas)')
     ap.add_argument('--profiles', action='store_true', help='refresca perfiles (capitalización, fundamentales, earnings)')
     ap.add_argument('--profiles-cache', default='data/profiles.json')
     a = ap.parse_args()
 
-    uni = load_universe(a.universe, a.limit)
+    uni = load_universe(a.universe, a.limit, a.index)
     symbols = list(dict.fromkeys(list(uni.symbol) + list(ETF_NAMES)))
     log(f'Universo: {len(uni)} acciones + {len(ETF_NAMES)} ETFs')
     frames = download(symbols)

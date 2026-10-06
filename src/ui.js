@@ -232,7 +232,7 @@
     const pil = k => `<div class="pl"><div style="display:flex;justify-content:space-between"><b>${PNAME[k]}</b><span>${nf(a.score.pillars[k], 1)}/${P[k].max}</span></div><div class="bar2"><i style="width:${a.score.pillars[k] / P[k].max * 100}%;background:${PCOL[k]}"></i></div></div>`;
     const kv = (k, v) => `<div><span>${k}</span><span>${v}</span></div>`;
     const flags = [[a.vcp.label !== 'Sin setup', 'VCP/BCP: ' + a.vcp.label + ' (' + (a.vcp.confidence * 100).toFixed(0) + '%, ' + { forming: 'en formación', breakout: 'sobre el pivote', extended: 'extendido', none: '' }[a.vcp.status] + ')'], [a.vcp.contractions.length >= 1, 'Base con ' + a.vcp.contractions.length + ' contracción(es)'], [f.breakout, 'Ruptura reciente con volumen'], [f.pullback, 'Pullback a SMA 21'], [a.sig.ema200Bounce, 'Rebote en EMA 200 (' + (a.sig.ema200Bounce ? a.sig.ema200Bounce.date : '') + ')'], [a.sig.cross200, 'Cruce de 200: ' + (a.sig.cross200 ? (a.sig.cross200.dir === 'up' ? 'alcista ' : 'bajista ') + a.sig.cross200.date : '')]].filter(x => x[0]);
-    const fu = a.fundamentals, det = Object.keys(PNAME).map(k => `<h3 style="margin-top:10px">${PNAME[k]}</h3><table><tbody>${a.score.detail[k].map(r => `<tr style="cursor:default"><td>${esc(r.label)}</td><td class="n">${nf(r.v * 100, 0)}%</td><td class="n">${nf(r.pts, 1)} pts</td></tr>`).join('')}</tbody></table>`).join('');
+    const fu = a.fundamentals, det = Object.keys(PNAME).map(k => `<h3 style="margin-top:10px">${PNAME[k]}</h3><table><tbody>${a.score.detail[k].map(r => `<tr style="cursor:default"><td>${esc(r.label)}</td><td class="n">${r.v === null ? 's/d' : nf(r.v * 100, 0) + '%'}</td><td class="n">${r.v === null ? 'no cuenta' : nf(r.pts, 1) + ' pts'}</td></tr>`).join('')}</tbody></table>`).join('');
     return `<button class="ghost" data-act="back">← Volver</button>
     <div class="card" style="margin-top:10px"><div class="dh"><span class="t">${a.symbol}</span><span class="p">${nf(f.close)}</span><span>${pc(f.dayChg)}</span><button class="star ${inW ? 'on' : ''}" data-act="star" aria-label="Watchlist" title="${inW ? 'Quitar de la watchlist' : 'Agregar a la watchlist'}">${inW ? '★' : '☆'}</button></div>
       <div class="note">${esc(a.name)} · ${esc(a.sector)} · ${esc(a.industry)} · Cap. ${cap(a.marketCap)}${a.type === 'stock' && M.meta.simulated ? ' (simulada)' : ''}</div></div>
@@ -253,7 +253,7 @@
     <p class="disc">Una señal no garantiza rendimiento, un patrón puede fallar y el contexto de mercado importa. Revisá el gráfico manualmente y gestioná el riesgo. Esta herramienta no ejecuta operaciones ni recomienda comprar o vender.</p>`;
   }
   function mountChart() {
-    const cv = $('#chart'); if (!cv) return; const a = M.map[S.detail.sym], D = S.detail.tf === 'D'; const sub = S.detail.sub;
+    const cv = $('#chart'); if (!cv) return; const a = Engine.hydrate(M.map[S.detail.sym], M.cfg), D = S.detail.tf === 'D'; const sub = S.detail.sub;
     const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
     const I = M.cfg.indicators; let bars, ov, volAvg, sd, defaultCount;
     if (D) {

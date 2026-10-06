@@ -28,7 +28,7 @@
 html { scroll-padding-top: env(safe-area-inset-top, 0px); }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
-body { font-family: 'Schibsted Grotesk', 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums; -webkit-text-size-adjust: 100%; }
+body { font-family: 'Schibsted Grotesk', 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.45; font-variant-numeric: lining-nums proportional-nums; -webkit-text-size-adjust: 100%; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }

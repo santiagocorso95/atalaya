@@ -46,7 +46,8 @@ const Engine = (function () {
   const avg = a => a.reduce((s, x) => s + x, 0) / (a.length || 1);
 
   /* ---------- semanal ---------- */
-  function weekKey(iso) { const d = new Date(iso + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - dow); return d.toISOString().slice(0, 10); }
+  const _wk = new Map();
+  function weekKey(iso) { let r = _wk.get(iso); if (r) return r; const d = new Date(iso + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - dow); r = d.toISOString().slice(0, 10); _wk.set(iso, r); return r; }
   function toWeekly(a) {
     const w = { d: [], o: [], h: [], l: [], c: [], v: [], di: [] }; let key = null;
     for (let i = 0; i < a.dates.length; i++) {
@@ -219,17 +220,17 @@ const Engine = (function () {
   /* ---------- 7. scoring configurable ---------- */
   function evalRule(r, f) {
     let v;
-    if (r.type === 'above' || r.type === 'gt') { const x = f[r.a], y = f[r.b]; v = nz(x) && nz(y) && x > y ? 1 : 0; }
+    if (r.type === 'above' || r.type === 'gt') { const x = f[r.a], y = f[r.b]; if (!nz(x) || !nz(y)) return null; v = x > y ? 1 : 0; }
     else if (r.type === 'bool') v = f[r.f] ? 1 : 0;
-    else { const x = f[r.f]; v = nz(x) ? clamp((x - r.lo) / (r.hi - r.lo), 0, 1) : 0; }
-    return v;
+    else { const x = f[r.f]; if (!nz(x)) return null; v = clamp((x - r.lo) / (r.hi - r.lo), 0, 1); }
+    return v;   // null = sin dato: la regla no cuenta (ni suma ni resta) y su peso se excluye
   }
   function computeScore(f, cfg) {
     const P = cfg.score.pillars, out = { pillars: {}, detail: {} };
     for (const key of ['trend', 'rs', 'contraction', 'setup']) {
       const p = P[key]; let sw = 0, sv = 0; const det = [];
-      p.rules.forEach(r => { const v = evalRule(r, f); sw += r.w; sv += r.w * v; det.push({ id: r.id, label: r.label, w: r.w, v, pts: 0 }); });
-      det.forEach(d => { d.pts = sw ? p.max * d.w * d.v / sw : 0; });
+      p.rules.forEach(r => { const v = evalRule(r, f); if (v !== null) { sw += r.w; sv += r.w * v; } det.push({ id: r.id, label: r.label, w: r.w, v, pts: 0 }); });
+      det.forEach(d => { d.pts = sw && d.v !== null ? p.max * d.w * d.v / sw : 0; });
       out.pillars[key] = sw ? p.max * sv / sw : 0; out.detail[key] = det;
     }
     const g = cfg.score.gate; out.gated = false;
@@ -291,13 +292,14 @@ const Engine = (function () {
     const model = { cfg, meta: norm.meta, dates: norm.dates, assets: norm.assets, map: {} };
     model.assets.forEach(a => { model.map[a.symbol] = a; });
     model.bench = model.map[cfg.benchmark]; if (!model.bench) throw new Error('Benchmark no encontrado: ' + cfg.benchmark);
-    model.assets.forEach(a => computeIndicators(a, cfg));
-    computeRS(model.assets, model.bench, cfg);
+    computeRS(model.assets, model.bench, cfg);              // solo usa cierres
     model.assets.forEach(a => {
+      computeIndicators(a, cfg);
       a.f = computeFeatures(a, model.bench, cfg); a.sig = computeSignals(a, a.f, cfg);
       a.score = computeScore(a.f, cfg); a.warn = computeWarnings(a.f, cfg);
       a.penalty = a.warn.reduce((s, x) => s + x.penalty, 0); a.net = Math.max(0, a.score.base - a.penalty);
       a.sess = sessionsData(a, cfg);
+      if (a.type === 'stock') { a.ind = null; a.wind = null; a.w = null; }   // memoria: se recalculan al abrir la ficha (hydrate)
     });
     model.stocks = model.assets.filter(a => a.type === 'stock');
     model.sectorEtfs = model.assets.filter(a => a.type === 'etf' && a.industry === 'ETF sectorial');
@@ -311,7 +313,9 @@ const Engine = (function () {
     model.buildMs = Date.now() - t0; return model;
   }
 
-  return { build, sma, ema, rci, macd, rsi, atr, quadOf, relVolAt, toWeekly };
+  function hydrate(a, cfg) { if (!a.ind) computeIndicators(a, cfg); return a; }
+
+  return { build, hydrate, sma, ema, rci, macd, rsi, atr, quadOf, relVolAt, toWeekly };
 })();
 
 if (typeof module !== 'undefined') module.exports = { Engine };

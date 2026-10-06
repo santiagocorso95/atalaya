@@ -21,9 +21,15 @@ assert d['S001'].startswith('historia corta') and d['S002'] == 'sin cotización 
 A = {a['s']: a for a in payload['assets']}
 n_d = len(payload['dates']); assert n_d == 1100
 assert all(len(a[k]) == n_d for a in A.values() for k in 'ohlcv')
-assert A['S004']['rb'] == 700 and A['S003']['rb'] == 1100 and A['S005']['v'][-1] == 0
+assert A['S004']['rb'] == 700 and A['S003']['rb'] == 1100 and A['S005']['v'][-1] == 0 and payload['meta']['format'] == 2
 assert A['S010']['mc'] == 3e11 and A['S010']['ed'] == '2026-10-28' and A['S010']['f']['pe'] == 20.5
-assert all(min(a['l'][i], a['o'][i], a['c'][i]) == a['l'][i] and max(a['h'][i], a['o'][i], a['c'][i]) == a['h'][i] for a in A.values() for i in range(0, n_d, 37))
+def dec(a):
+    import itertools
+    c = list(itertools.accumulate(a['c']))
+    return c, [c[i] + a['o'][i] for i in range(len(c))], [c[i] + a['h'][i] for i in range(len(c))], [c[i] + a['l'][i] for i in range(len(c))]
+for a in A.values():
+    c, o, h, l = dec(a)
+    assert all(l[i] <= min(o[i], c[i]) and h[i] >= max(o[i], c[i]) and c[i] > 0 for i in range(len(c))), a['s']
 assert A['XLK']['sec'] == 'Tecnología' and A['XLK']['ind'] == 'ETF sectorial' and A['SPY']['t'] == 'etf'
 json.dump(payload, open('/tmp/data_test.json', 'w'), separators=(',', ':'))
 print('OK', len(payload['assets']), 'activos;', round(len(json.dumps(payload, separators=(',', ':'))) / 1e6, 1), 'MB para', len(payload['assets']), 'activos')

@@ -148,6 +148,13 @@ const HttpProvider = (function () {
       d = await r.json();
     }
     if (!d || !d.dates || !d.assets) throw new Error('data.json con formato inválido');
+    const v2 = d.meta && d.meta.format === 2;
+    if (v2) d.assets.forEach(x => { // deltas/offsets en centavos -> precios; volumen en miles
+      const n = x.c.length, c = new Array(n); let acc = 0;
+      for (let i = 0; i < n; i++) { acc += x.c[i]; c[i] = acc; }
+      x.o = x.o.map((q, i) => (c[i] + q) / 100); x.h = x.h.map((q, i) => (c[i] + q) / 100); x.l = x.l.map((q, i) => (c[i] + q) / 100);
+      x.c = c.map(q => q / 100); x.v = x.v.map(q => q * 1000);
+    });
     const assets = d.assets.map(x => ({ symbol: x.s, name: x.n, type: x.t, sector: x.sec, industry: x.ind, marketCap: x.mc || null,
       dates: d.dates, o: x.o, h: x.h, l: x.l, c: x.c, v: x.v, realBars: x.rb || d.dates.length, fundamentals: x.f || null, earningsDate: x.ed || null }));
     return { meta: { source: d.meta.source || 'real', simulated: false, asOf: d.dates[d.dates.length - 1], generated: d.meta.generated, label: d.meta.label || 'Datos reales', dropped: d.meta.dropped || 0 }, assets };
