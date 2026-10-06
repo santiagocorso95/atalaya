@@ -310,12 +310,38 @@ const Engine = (function () {
       const m = model.stocks.filter(a => a.sector === s).sort((x, y) => y.f.rsRating - x.f.rsRating); const etf = model.sectorEtfs.find(e => e.sector === s);
       const rot = model.rotation.find(r => r.sector === s); return { sector: s, leader: m[0], count: m.length, etf: etf && etf.symbol, quad: rot && rot.quad };
     });
+    model.sectorStats = model.sectors.map(sec => {
+      const st = model.stocks.filter(a => a.sector === sec), n = st.length, mean = (arr, f) => arr.length ? arr.reduce((x, a) => x + f(a), 0) / arr.length : 0;
+      const byNet = st.slice().sort((x, y) => y.net - x.net), rs = st.map(a => a.f.rsRating).sort((x, y) => x - y);
+      const etf = model.sectorEtfs.find(e => e.sector === sec), rot = model.rotation.find(r => r.sector === sec);
+      return { sector: sec, n, etf: etf && etf.symbol, quad: rot && rot.quad,
+        avgScore: mean(st, a => a.net), top5: mean(byNet.slice(0, 5), a => a.net), medRS: rs[Math.floor(rs.length / 2)] || 0, avgRSchg: mean(st, a => a.f.rsChange5),
+        pct50: 100 * st.filter(a => a.f.close > a.f.sma50).length / (n || 1), pct200: 100 * st.filter(a => nz(a.f.ema200) && a.f.close > a.f.ema200).length / (n || 1),
+        vcp: st.filter(a => a.vcp.label === 'Posible VCP').length, brk: st.filter(a => a.f.breakout).length, leader: byNet[0] };
+    });
     model.buildMs = Date.now() - t0; return model;
+  }
+
+  // Clave estable de la configuración (para saber si un historial guardado corresponde a la config actual)
+  function cfgKey(cfg) { const t = JSON.stringify(cfg); let h = 5381; for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return String(h >>> 0); }
+
+  // Recalcula el ranking como se habría visto en cada una de las últimas K ruedas (usa solo datos hasta ese día)
+  // y devuelve, por día, las N acciones con mayor score neto.
+  function historyTop(raw, cfg, K, N) {
+    const n = raw.assets.find(a => a.symbol === cfg.benchmark).c.length, out = [];
+    for (let k = K - 1; k >= 0; k--) {
+      const cut = n - k;
+      const r = { meta: raw.meta, assets: raw.assets.map(a => ({ ...a, dates: a.dates.slice(0, cut), o: a.o.slice(0, cut), h: a.h.slice(0, cut), l: a.l.slice(0, cut), c: a.c.slice(0, cut), v: a.v.slice(0, cut), realBars: Math.max(1, (a.realBars || n) - k) })) };
+      const m = build(r, cfg);
+      const top = m.stocks.slice().sort((x, y) => y.net - x.net || y.f.rsRating - x.f.rsRating).slice(0, N).map(a => [a.symbol, Math.round(a.net * 10) / 10]);
+      out.push({ date: m.dates[m.dates.length - 1], top });
+    }
+    return out;
   }
 
   function hydrate(a, cfg) { if (!a.ind) computeIndicators(a, cfg); return a; }
 
-  return { build, hydrate, sma, ema, rci, macd, rsi, atr, quadOf, relVolAt, toWeekly };
+  return { build, hydrate, cfgKey, historyTop, sma, ema, rci, macd, rsi, atr, quadOf, relVolAt, toWeekly };
 })();
 
 if (typeof module !== 'undefined') module.exports = { Engine };

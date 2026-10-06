@@ -86,7 +86,7 @@
     const slice = o.nopage ? sorted : sorted.slice(st.page * ps, st.page * ps + ps);
     if (!rows.length) return `<div class="empty">${o.empty || 'Ningún activo cumple las condiciones con los filtros actuales.'}</div>`;
     return `<div class="tw"><table><thead><tr>${cols.map(c => `<th class="${c.n ? 'n' : ''}${c.k === st.key ? ' on' : ''}" data-sort="${id}|${c.k}">${c.t}${c.k === st.key ? (st.dir < 0 ? ' ↓' : ' ↑') : ''}</th>`).join('')}</tr></thead>
-    <tbody>${slice.map(r => `<tr data-sym="${r.symbol || (r.a && r.a.symbol) || ''}">${cols.map(c => `<td class="${c.n ? 'n' : ''} ${c.cls || ''}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <tbody>${slice.map(r => `<tr data-sym="${r.symbol || (r.a && r.a.symbol) || ''}"${r.sec ? ` data-sec="${esc(r.sec)}"` : ''}>${cols.map(c => `<td class="${c.n ? 'n' : ''} ${c.cls || ''}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
     ${!o.nopage && pages > 1 ? `<div class="pager"><span>${sorted.length} resultados · página ${st.page + 1} de ${pages}</span><button data-pg="${id}|-1"${st.page === 0 ? ' disabled' : ''}>Anterior</button><button data-pg="${id}|1"${st.page >= pages - 1 ? ' disabled' : ''}>Siguiente</button></div>` : `<div class="pager"><span>${sorted.length} resultados</span></div>`}`;
   }
   const C = {
@@ -172,6 +172,88 @@
     const rows = filtered(M.assets); const N = M.cfg.sessions.n;
     const cols = [C.sym, C.nm, { k: 'p', t: 'Sesiones +', n: 1, f: a => a.sess.pos, v: a => a.sess.pos }, { k: 'n', t: 'Sesiones −', n: 1, f: a => a.sess.neg, v: a => a.sess.neg }, { k: 'pv', t: 'Positivas con volumen', n: 1, f: a => a.sess.posVol, v: a => a.sess.posVol }, { k: 'nv', t: 'Negativas con volumen', n: 1, f: a => a.sess.negVol, v: a => a.sess.negVol }, { k: 'rv', t: 'Vol. rel. prom.', n: 1, f: a => nf(a.sess.avgRel) + 'x', v: a => a.sess.avgRel }, { k: 'sc', t: 'Score sesiones', n: 1, f: a => pp(a.sess.score, 0), v: a => a.sess.score }];
     return `<div class="card" style="margin-bottom:12px"><h2>Sesiones y volumen · últimas ${N} ruedas</h2><p class="note">Volumen significativo = al menos ${nf(M.cfg.volume.significantRel, 1)}x el promedio de 20 ruedas previas. Score sesiones = positivas con volumen − negativas con volumen (regla simple, configurable).</p></div>${table('sess', cols, rows, { sort: 'sc' })}`;
+  }
+
+
+
+  /* ---------- top 50 ---------- */
+  function ensureHist() {
+    const key = Engine.cfgKey(CFG);
+    if (S.hist && S.hist.cfgKey === key) return true;
+    if (M.assets.length <= 300 && !S.histBusy) {   // universo chico: se recalcula en el navegador
+      S.histBusy = true;
+      setTimeout(() => { S.hist = { cfgKey: key, topN: 50, days: Engine.historyTop(RAW, CFG, 20, 50) }; S.histBusy = false; if (S.view === 'top') render(); }, 30);
+    }
+    return false;
+  }
+  function spark(a, up) {
+    const c = a.c.slice(-20), lo = Math.min(...c), hi = Math.max(...c), w = 92, h = 26, rg = hi - lo || 1;
+    const pts = c.map((v, i) => (i / (c.length - 1) * w).toFixed(1) + ',' + (h - 2 - (v - lo) / rg * (h - 4)).toFixed(1)).join(' ');
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${up ? 'var(--up)' : 'var(--down)'}" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+  }
+  function vTop() {
+    const N = 50, ready = ensureHist(), H = S.hist, key = Engine.cfgKey(CFG), stale = H && H.cfgKey !== key;
+    const top = M.stocks.slice().sort((a, b) => b.net - a.net || b.f.rsRating - a.f.rsRating).slice(0, N);
+    const di = M._di || (M._di = new Map(M.dates.map((d, i) => [d, i]))), last = M.dates.length - 1, spyC = M.bench.c;
+    const rows = top.map((a, i) => {
+      let entry = null, ret = null, spy = null;
+      if (H && H.days && H.days.length) {
+        let k = H.days.length - 1; if (!H.days[k].top.some(t => t[0] === a.symbol)) k = -1;
+        if (k >= 0) { while (k > 0 && H.days[k - 1].top.some(t => t[0] === a.symbol)) k--; const d = H.days[k].date, ix = di.get(d);
+          if (ix !== undefined) { entry = { date: d, atLeast: k === 0 }; ret = (a.c[last] / a.c[ix] - 1) * 100; spy = (spyC[last] / spyC[ix] - 1) * 100; } }
+        else { entry = { date: M.dates[last], atLeast: false, now: true }; ret = 0; spy = 0; }
+      }
+      return { symbol: a.symbol, a, rank: i + 1, entry, ret, spy };
+    });
+    const withRet = rows.filter(r => r.ret !== null), mean = x => x.length ? x.reduce((s, v) => s + v, 0) / x.length : null;
+    const med = x => { const y = x.slice().sort((p, q) => p - q); return y.length ? y[Math.floor(y.length / 2)] : null; };
+    const mr = mean(withRet.map(r => r.ret)), ms = mean(withRet.map(r => r.spy)), pos = withRet.length ? 100 * withRet.filter(r => r.ret > 0).length / withRet.length : null;
+    const mx = Math.max(5, ...withRet.map(r => Math.abs(r.ret)));
+    const bar = r => r.ret === null ? '–' : `<span style="display:inline-flex;align-items:center;gap:8px;justify-content:flex-end"><span style="display:inline-block;width:70px;height:7px;background:var(--chip);border-radius:4px;overflow:hidden"><i style="display:block;height:100%;width:${Math.min(100, Math.abs(r.ret) / mx * 100)}%;background:${r.ret >= 0 ? 'var(--up)' : 'var(--down)'}"></i></span>${pc(r.ret)}</span>`;
+    const cols = [{ k: 'rank', t: '#', n: 1, f: r => r.rank, v: r => -r.rank },
+      { k: 'sym', t: 'Ticker', cls: 'sym', f: r => `${r.a.symbol} <span class="note" style="font-weight:400">${esc(r.a.name.length > 22 ? r.a.name.slice(0, 21) + '…' : r.a.name)}</span>`, v: r => r.a.symbol },
+      { k: 'ev', t: 'Evolución 20r', f: r => spark(r.a, r.a.c[last] >= r.a.c[last - 19]), v: r => r.a.f.ret20 },
+      { k: 'sc', t: 'Score', n: 1, f: r => `<span class="score">${nf(r.a.net, 0)}</span> ${rib(r.a)}`, v: r => r.a.net },
+      { k: 'en', t: 'Entró', f: r => !r.entry ? '–' : r.entry.now ? 'Hoy' : (r.entry.atLeast ? '≤ ' : '') + r.entry.date.slice(5), v: r => r.entry ? r.entry.date : '' },
+      { k: 'rt', t: 'Retorno desde que entró', n: 1, f: bar, v: r => r.ret },
+      { k: 'sec', t: 'Sector', cls: 'nm', f: r => esc(r.a.sector), v: r => r.a.sector },
+      { k: 'rs', t: 'RS', n: 1, f: r => nf(r.a.f.rsRating, 0), v: r => r.a.f.rsRating },
+      { k: 'su', t: 'Setup', f: r => setupChip(r.a), v: r => r.a.vcp.confidence }, { ...C.warn, f: r => warnCell(r.a), v: r => r.a.warn.length }];
+    const big = (v, c) => `<div class="big" style="font-size:38px;color:var(--${c})">${v === null ? '–' : (v > 0 ? '+' : '') + nf(v, 2) + '%'}</div>`;
+    const warn = !H ? `<div class="wi" style="margin-bottom:12px">${ready === false && M.assets.length <= 300 ? 'Calculando el historial de las últimas 20 ruedas…' : 'Falta <b>history.json</b> (se genera en la corrida del workflow actualizado). Mientras tanto se muestra el ranking sin fecha de entrada ni retornos.'}</div>` : stale ? `<div class="wi" style="margin-bottom:12px">${M.assets.length <= 300 ? 'Recalculando historial con la configuración actual…' : 'El historial se calculó con la configuración por defecto; si la modificaste, la columna “Entró” puede no coincidir con este ranking.'}</div>` : '';
+    return `${warn}<div class="card" style="margin-bottom:12px"><h2>Top ${N} por score</h2>
+      <div class="grid g4" style="margin-top:6px"><div><h3>Retorno medio del top ${N}</h3>${big(mr, mr >= 0 ? 'up' : 'down')}</div><div><h3>${M.cfg.benchmark} (mismas fechas de entrada)</h3>${big(ms, ms >= 0 ? 'up' : 'down')}</div>
+      <div><h3>Mediana · % con retorno positivo</h3><div class="big" style="font-size:30px">${med(withRet.map(r => r.ret)) === null ? '–' : nf(med(withRet.map(r => r.ret)), 2) + '%'} <span class="note">· ${pos === null ? '–' : nf(pos, 0) + '%'}</span></div></div></div>
+      <p class="note" style="margin-top:10px">Las ${N} acciones con mayor score neto hoy (combinación de tendencia, fuerza relativa, contracción y setup, menos warnings). <b>Entró</b> es el primer día de la racha actual dentro del top ${N}${H ? ' (“≤” = ya estaba al inicio de la ventana de ' + H.days.length + ' ruedas)' : ''}; el retorno es del cierre de hoy contra el cierre de ese día, en promedio simple y sin costos.</p>
+      <p class="note"><b>Cómo leerlo:</b> describe lo que ya pasó con una selección armada con los mismos datos; no es una predicción ni un rendimiento esperado. La ventana es corta, el universo son solo empresas actuales del índice (sesgo de supervivencia) y las que más subieron pueden estar ya extendidas. Confirmá cada una en el gráfico.</p></div>
+      ${table('top50', cols, rows, { sort: 'rank', dir: -1, page: 50, nopage: true })}`;
+  }
+
+  /* ---------- sectores ---------- */
+  function vSectors() {
+    const SS = M.sectorStats; if (!S.sector || !SS.find(x => x.sector === S.sector)) S.sector = SS.slice().sort((a, b) => b.top5 - a.top5)[0].sector;
+    const cur = SS.find(x => x.sector === S.sector), qcls = { Leading: 'up', Improving: '', Weakening: 'warn', Lagging: 'down' };
+    const qchip = r => r.quad ? `<span class="chip ${qcls[r.quad]}">${r.etf} · ${r.quad}</span>` : '–';
+    const cols = [{ k: 'sec', t: 'Sector', cls: 'sym', f: r => esc(r.sector), v: r => r.sector }, { k: 'q', t: 'ETF · cuadrante', f: qchip, v: r => r.quad || '' },
+      { k: 'n', t: 'Acciones', n: 1, f: r => r.n, v: r => r.n }, { k: 't5', t: 'Score top 5', n: 1, f: r => `<b>${nf(r.top5, 0)}</b>`, v: r => r.top5 }, { k: 'av', t: 'Score prom.', n: 1, f: r => nf(r.avgScore, 0), v: r => r.avgScore },
+      { k: 'rs', t: 'RS mediana', n: 1, f: r => nf(r.medRS, 0), v: r => r.medRS }, { k: 'rc', t: 'Δ RS 1s prom.', n: 1, f: r => pp(r.avgRSchg), v: r => r.avgRSchg },
+      { k: 'p5', t: '% sobre SMA 50', n: 1, f: r => nf(r.pct50, 0) + '%', v: r => r.pct50 }, { k: 'p2', t: '% sobre EMA 200', n: 1, f: r => nf(r.pct200, 0) + '%', v: r => r.pct200 },
+      { k: 'vc', t: 'Posibles VCP', n: 1, f: r => r.vcp, v: r => r.vcp }, { k: 'br', t: 'Rupturas', n: 1, f: r => r.brk, v: r => r.brk }, { k: 'ld', t: 'Mejor score', f: r => r.leader.symbol, v: r => r.leader.symbol }];
+    const rows = SS.map(r => ({ ...r, symbol: '', sec: r.sector }));
+    const st = M.stocks.filter(a => a.sector === S.sector);
+    const topC = [C.sym, C.nm, C.px, C.chg, C.score, { k: 'setup', t: 'Setup', f: setupChip, v: a => a.vcp.confidence }, { k: 'con', t: 'Contracción', f: conChip, v: a => a.score.pillars.contraction }, C.rs, C.warn];
+    const rsC = [C.sym, C.nm, { k: 'rs', t: 'RS actual', n: 1, f: a => nf(a.f.rsRating, 0), v: a => a.f.rsRating }, { k: 'w', t: 'Cambio sem.', n: 1, f: a => pp(a.f.rsChange5), v: a => a.f.rsChange5 }, { k: 'm', t: 'Cambio mens.', n: 1, f: a => pp(a.f.rsChange21), v: a => a.f.rsChange21 }, C.score];
+    const setups = st.filter(a => a.vcp.label !== 'Sin setup' || a.f.breakout || a.f.pullback);
+    const setC = [C.sym, C.nm, { k: 'setup', t: 'Setup', f: setupChip, v: a => a.vcp.confidence }, { k: 'dp', t: 'Dist. al pivote', n: 1, f: a => pc(-a.f.distPivot), v: a => -a.f.distPivot }, { k: 'fl', t: 'Señales', f: a => [a.f.breakout ? 'Ruptura' : '', a.f.pullback ? 'Pullback' : ''].filter(Boolean).join(' · ') || '–', v: a => a.f.breakout ? 2 : a.f.pullback ? 1 : 0 }, C.score];
+    return `<div class="card" style="margin-bottom:12px"><h2>Comparación de sectores</h2><p class="note">Score top 5 = promedio del score de las 5 mejores acciones del sector; sirve para ver dónde hay más candidatas. Un sector atractivo combina ETF en Leading o Improving, buena amplitud (% sobre SMA 50 y EMA 200) y RS en alza. Tocá una fila o elegí un sector abajo.</p></div>
+      ${table('secs', cols, rows, { sort: 't5', nopage: true })}
+      <div class="pills" style="margin:14px 0 10px">${SS.map(x => `<button data-secsel="${esc(x.sector)}" class="${x.sector === S.sector ? 'on' : ''}">${esc(x.sector)}</button>`).join('')}</div>
+      <div class="card"><div class="dh"><span class="t" style="font-size:22px">${esc(cur.sector)}</span><span>${qchip(cur)}</span></div>
+        <div class="kv" style="margin-top:8px"><div><span>Acciones</span><span>${cur.n}</span></div><div><span>Score top 5</span><span>${nf(cur.top5, 0)}</span></div><div><span>RS mediana</span><span>${nf(cur.medRS, 0)}</span></div><div><span>Sobre SMA 50</span><span>${nf(cur.pct50, 0)}%</span></div><div><span>Sobre EMA 200</span><span>${nf(cur.pct200, 0)}%</span></div><div><span>Posibles VCP</span><span>${cur.vcp}</span></div></div></div>
+      <div class="card" style="margin-top:12px"><h2>Mejores empresas por score</h2>${table('sec_top', topC, st, { sort: 'score', page: 10 })}</div>
+      <div class="grid g2" style="margin-top:12px"><div class="card"><h2>Mayor fuerza relativa</h2>${table('sec_rs', rsC, st, { sort: 'rs', page: 8 })}</div>
+      <div class="card"><h2>Bases, rupturas y pullbacks</h2>${table('sec_set', setC, setups, { sort: 'setup', page: 8, empty: 'Ninguna acción de este sector tiene un setup detectado.' })}</div></div>
+      <p class="note" style="margin-top:10px">Los resultados son señales para revisar el gráfico, no recomendaciones. El score ordena la lista; la decisión es tuya.</p>`;
   }
 
   /* ---------- rotación ---------- */
@@ -299,8 +381,8 @@
   }
 
   /* ---------- render / navegación ---------- */
-  const TABS = [['market', 'Mercado'], ['ranking', 'Ranking'], ['signals', 'Señales'], ['rotation', 'Rotación'], ['rs', 'Fuerza relativa'], ['sessions', 'Sesiones y volumen'], ['watch', 'Watchlist'], ['tools', 'Herramientas']];
-  const VIEWS = { market: vMarket, ranking: vRanking, signals: vSignals, rotation: vRotation, rs: vRS, sessions: vSessions, watch: vWatch, tools: vTools, detail: vDetail };
+  const TABS = [['market', 'Mercado'], ['top', 'Top 50'], ['ranking', 'Ranking'], ['sectors', 'Sectores'], ['signals', 'Señales'], ['rotation', 'Rotación'], ['rs', 'Fuerza relativa'], ['sessions', 'Sesiones y volumen'], ['watch', 'Watchlist'], ['tools', 'Herramientas']];
+  const VIEWS = { market: vMarket, top: vTop, ranking: vRanking, sectors: vSectors, signals: vSignals, rotation: vRotation, rs: vRS, sessions: vSessions, watch: vWatch, tools: vTools, detail: vDetail };
   function render() {
     $('#tabs').innerHTML = TABS.map(t => `<button data-view="${t[0]}" class="${S.view === t[0] ? 'on' : ''}">${t[1]}</button>`).join('');
     $('#filters').style.display = ['ranking', 'signals', 'rs', 'sessions', 'rotation'].includes(S.view) ? '' : 'none';
@@ -323,6 +405,8 @@
     if ((x = c('[data-etf]'))) {
       const v = x.dataset.etf; S.rot.sel = v || null; const e = v && M.rotation.find(r => r.symbol === v); S.filters.sector = e ? e.sector : ''; S.fopen = false; renderFilters(); render(); return;
     }
+    if ((x = c('[data-secsel]'))) { S.sector = x.dataset.secsel; return render(); }
+    if ((x = c('tr[data-sec]'))) { S.sector = x.dataset.sec; render(); const y = document.querySelector('[data-secsel].on'); if (y) y.scrollIntoView({ block: 'center' }); return; }
     if ((x = c('tr[data-sym]')) && x.dataset.sym) return go('detail', x.dataset.sym);
     if ((x = c('.snap[data-sym]'))) return go('detail', x.dataset.sym);
     if ((x = c('[data-act]'))) {
@@ -374,6 +458,7 @@
   try { RAW = await HttpProvider.load(CFG); }
   catch (err) { RAW = await MockProvider.load(CFG); note = err.message; }
   M = Engine.build(RAW, CFG);
+  try { S.hist = window.__ATALAYA_HISTORY__ || null; if (!S.hist && !M.meta.simulated) { const r = await fetch('history.json', { cache: 'no-cache' }); if (r.ok) S.hist = await r.json(); } } catch (e) { S.hist = null; }
   const sim = M.meta.simulated, tag = $('#asof');
   tag.textContent = (sim ? 'Datos simulados' : 'Datos reales') + ' · al ' + M.meta.asOf + ' · ' + M.assets.length + ' activos' + (M.meta.rejected ? ' (' + M.meta.rejected + ' descartados)' : '') + ' · cálculo ' + M.buildMs + ' ms';
   tag.classList.toggle('real', !sim); tag.title = sim ? 'No se encontró data.json (' + note + '). Se muestran datos de prueba.' : 'Generado: ' + (M.meta.generated || 's/d');
