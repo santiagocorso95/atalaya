@@ -28,6 +28,11 @@ jobs:
           restore-keys: profiles-
       - name: Descargar precios y perfiles
         run: python tools/build_data.py --index sp1500 --out site/data.json --profiles
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Historial del Top 50 (últimas 20 ruedas)
+        run: node tools/score_history.js site/data.json site/history.json --days 20 --top 50
       - name: Armar la página
         run: python build.py --out site/index.html
       - uses: actions/upload-pages-artifact@v3
