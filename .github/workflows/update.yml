@@ -27,7 +27,7 @@ jobs:
           key: profiles-${{ steps.week.outputs.w }}
           restore-keys: profiles-
       - name: Descargar precios y perfiles
-        run: python tools/build_data.py --out site/data.json --profiles
+        run: python tools/build_data.py --index sp1500 --out site/data.json --profiles
       - name: Armar la página
         run: python build.py --out site/index.html
       - uses: actions/upload-pages-artifact@v3
